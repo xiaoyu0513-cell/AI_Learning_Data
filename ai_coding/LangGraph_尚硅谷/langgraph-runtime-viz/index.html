@@ -1,0 +1,1396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LangGraph Runtime 运行图</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  /*
+    颜色变量与页面组件对应关系：
+    - --bg：页面背景，以及第 ③ / ④ 页右侧栏背景。
+    - --surface / --surface-strong：图结构画布、卡片、按钮、标注浮层。
+    - --card：内部信息面板、State 子项、START / END 基础填充。
+    - --text / --text-secondary / --text-muted / --text-inverse：标题、正文、说明文字、弱化文字、深色按钮文字。
+    - --accent 系列：激活标签、当前路由边、当前处理节点、按钮、Checkpoint 悬停聚焦。
+    - --green 系列：已完成节点 / 边，以及图例中的“已执行完毕”状态。
+    - --border / --border-strong：卡片边框、节点边框、分割线。
+    - --edge / --edge-dim：默认图边线与弱化图边线。
+    - --node-*：节点状态背景色与节点内部说明文字。
+    - --shadow-*：图结构卡片、标注浮层、悬停聚焦和发光效果。
+  */
+  --bg: #f5f2ed;
+  --surface: #ffffff;
+  --surface-strong: #ffffff;
+  --card: #faf8f5;
+  --text: #1a1d23;
+  --text-secondary: #78716c;
+  --text-muted: #a8a29e;
+  --text-inverse: #ffffff;
+  --accent: #c97b35;
+  --accent-strong: #b86a2a;
+  --accent-light: rgba(201,123,53,0.10);
+  --accent-soft: rgba(201,123,53,0.06);
+  --accent-hover: rgba(201,123,53,0.18);
+  --accent-border-soft: rgba(201,123,53,0.15);
+  --accent-glow: rgba(201,123,53,0.22);
+  --accent-glow-strong: rgba(201,123,53,0.24);
+  --accent-pulse: rgba(201,123,53,0.30);
+  --accent-pulse-strong: rgba(201,123,53,0.50);
+  --blue: #3b82f6;
+  --blue-light: rgba(59,130,246,0.08);
+  --green: #5a8a5a;
+  --green-light: rgba(90,138,90,0.10);
+  --green-soft: #f1f8f1;
+  --green-glow: rgba(90,138,90,0.18);
+  --border: #e5e2dc;
+  --border-strong: #d4cfc8;
+  --edge: #c4bfb8;
+  --edge-dim: #e0dcd6;
+  --node-active-bg: #fff8ef;
+  --node-running-bg: #fff3df;
+  --node-subtext: #a8a29e;
+  --shadow-color-soft: rgba(0,0,0,0.06);
+  --shadow-color-md: rgba(0,0,0,0.10);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.08);
+
+  /*
+    字体变量与页面组件对应关系：
+    - --font-cn：中文界面文案、标注文字、State 面板标题、节点内部中文说明。
+    - --font-latin：英文标签和数字优先使用，例如 START、END、node_1、node_2、页面标题、卡片标题。
+    - --font-mixed：中英数字混排文本，例如按钮、标签页、Checkpoint 元数据、State 值。
+    中文优先使用 NSimSun / 新宋体；英文和数字优先使用 Times New Roman。
+  */
+  --font-cn: "NSimSun", "新宋体", "SimSun", "宋体", "Songti SC", serif;
+  --font-latin: "Times New Roman", "Times", "Georgia", serif;
+  --font-mixed: "Times New Roman", "Times", "NSimSun", "新宋体", "SimSun", serif;
+
+  /*
+    字号变量与页面组件对应关系：
+    - --fs-xxs / --fs-xs / --fs-2xs：第 ④ 页右侧栏中紧凑的 Checkpoint 字段。
+    - --fs-sm：步骤编号、Checkpoint 标签、小屏响应式标签。
+    - --fs-node-note：node_1 / node_2 内部的说明文字。
+    - --fs-ui：标签页、按钮、Checkpoint 副标题、紧凑面板文字。
+    - --fs-base / --fs-body：说明卡片、标注浮层、阶段说明、页面默认正文。
+    - --fs-md：节点标签、标注标题、页头说明文字。
+    - --fs-node-special：START / END 标签。
+    - --fs-state-title / --fs-card-title：State 面板标题和 Checkpoint 卡片标题。
+    - --fs-title-mobile / --fs-title：移动端和桌面端页面主标题。
+  */
+  --fs-xxs: 10px;
+  --fs-xs: 13px;
+  --fs-2xs: 13px;
+  --fs-sm: 19px;
+  --fs-node-note: 19px;
+  --fs-ui: 19px;
+  --fs-base: 19px;
+  --fs-body: 15px;
+  --fs-md: 21px;
+  --fs-node-special: 17px;
+  /* START END */
+  --fs-state-title: 19px;
+  --fs-card-title: 20px;
+  --fs-title-mobile: 26px;
+  --fs-title: 36px;
+
+  /* Shape and motion tokens shared by all controls and graph states. */
+  --radius: 10px;
+  --transition: 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mixed);
+  font-size: var(--fs-body);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ===== Header ===== */
+.page-header {
+  width: 100%;
+  max-width: 1280px;
+  padding: 48px 24px 12px;
+  text-align: center;
+}
+.page-header h1 {
+  font-family: var(--font-latin);
+  font-size: var(--fs-title);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+.page-header h1 em { font-style: italic; color: var(--accent); }
+.page-header p {
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+  margin-top: 10px;
+  letter-spacing: 0.01em;
+}
+
+/* ===== Stepper ===== */
+.stepper {
+  display: flex;
+  gap: 2px;
+  width: 100%;
+  max-width: 1280px;
+  padding: 24px 24px 8px;
+  justify-content: center;
+}
+.stepper .step {
+  flex: 1;
+  max-width: 200px;
+  padding: 12px 16px;
+  border: none;
+  border-bottom: 2px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mixed);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+  letter-spacing: 0.02em;
+  position: relative;
+}
+.stepper .step:hover { color: var(--text-secondary); border-color: var(--border-strong); }
+.stepper .step.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.stepper .step .num {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  line-height: 20px;
+  text-align: center;
+  border-radius: 50%;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  margin-right: 6px;
+  border: 1.5px solid currentColor;
+  transition: all var(--transition);
+}
+.stepper .step.active .num { background: var(--accent); color: var(--text-inverse); border-color: var(--accent); }
+
+/* ===== Main ===== */
+main { width: 100%; max-width: 1360px; padding: 0 16px 40px; }
+main.timeline-mode {
+  display: block;
+  width: 100%;
+  max-width: none;
+  padding: 0 424px 40px 8px;
+}
+main.timeline-mode .graph-area {
+  width: 100%;
+}
+main.timeline-mode #panel-4 {
+  display: block;
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 20;
+  width: 410px;
+  height: 100vh;
+  padding: 8px 10px 10px 8px;
+  overflow: visible;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  transition: width 0.22s ease, padding-left 0.22s ease;
+}
+main.timeline-mode #panel-4 .section-card {
+  margin-top: 0;
+  padding: 12px;
+  max-height: calc(100vh - 18px);
+  overflow: visible;
+}
+main.timeline-mode #panel-4 .section-card > p {
+  margin-bottom: 10px !important;
+  font-size: var(--fs-ui);
+  line-height: 1.55;
+}
+main.superstep-mode {
+  display: grid;
+  grid-template-columns: minmax(0, 1360px) 420px;
+  gap: 0;
+  align-items: start;
+  max-width: 1780px;
+  padding: 0 16px 40px;
+}
+main.superstep-mode .graph-area {
+  grid-column: 1;
+  grid-row: 1;
+}
+main.superstep-mode #panel-3 {
+  grid-column: 2;
+  grid-row: 1;
+  display: block;
+}
+main.superstep-mode #panel-3 .section-card {
+  margin-top: 0;
+  padding: 14px;
+}
+main.superstep-mode #panel-3 .stage-bar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+main.superstep-mode #panel-3 .stage-bar .connector {
+  display: none;
+}
+main.superstep-mode #panel-3 .stage-bar .dot {
+  justify-content: flex-start;
+  border-radius: 8px;
+}
+main.superstep-mode #panel-3 .stage-desc {
+  min-height: 0;
+  padding: 14px;
+  font-size: var(--fs-ui);
+  line-height: 1.65;
+}
+main.superstep-mode #panel-3 .stage-legend {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+main.superstep-mode #panel-3 .sec3-ctrl {
+  flex-wrap: wrap;
+  justify-content: stretch;
+  margin-top: 14px;
+}
+main.superstep-mode #panel-3 .sec3-ctrl button {
+  flex: 1 1 100px;
+  padding: 9px 10px;
+}
+
+/* ===== Graph Area ===== */
+.graph-area {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transform: scale(0.85);
+  transform-origin: top center;
+  margin-bottom: -75px;
+}
+.graph-area svg { display: block; width: 100%; height: auto; }
+
+/* ===== Section Panel ===== */
+.section-panel { display: none; }
+.section-panel.active { display: block; }
+
+.section-card {
+  margin-top: 16px;
+  padding: 24px 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  font-size: var(--fs-base);
+  line-height: 1.8;
+  color: var(--text-secondary);
+  animation: fadeUp 0.4s ease;
+}
+.section-card strong { color: var(--text); font-weight: 600; }
+.section-card code {
+  font-family: var(--font-mixed);
+  font-size: var(--fs-ui);
+  background: var(--card);
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--accent);
+}
+
+/* ===== SVG Styles ===== */
+.edge-line {
+  fill: none;
+  stroke: var(--edge);
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: all var(--transition);
+}
+.edge-line.active {
+  stroke: var(--accent);
+  stroke-width: 3.5;
+}
+.edge-line.flowing {
+  stroke-dasharray: 8 5;
+  animation: dashFlow 0.9s linear infinite;
+}
+.edge-line.dimmed { stroke: var(--edge-dim); stroke-width: 1.6; }
+.edge-line.done { stroke: var(--green); stroke-width: 3; }
+
+.node-group { transition: opacity var(--transition); }
+.node-group.dimmed { opacity: 0.18; }
+
+.node-bg {
+  fill: var(--surface);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+  transition: all var(--transition);
+}
+.node-bg.special {
+  fill: var(--card);
+  stroke: var(--edge);
+  stroke-width: 1.5;
+}
+.node-label {
+  fill: var(--text);
+  font-family: var(--font-latin);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+.node-label.special { font-family: var(--font-latin); font-size: var(--fs-node-special); font-weight: 600; }
+
+/* Node state classes */
+.node-group.routing .node-bg {
+  fill: var(--node-active-bg);
+  stroke: var(--accent);
+  stroke-width: 3.5;
+  filter: drop-shadow(0 0 12px var(--accent-glow));
+}
+.node-group.running .node-bg {
+  fill: var(--node-running-bg);
+  stroke: var(--accent);
+  stroke-width: 4;
+  animation: pulseGlow 1s ease-in-out infinite;
+}
+.node-group.done .node-bg {
+  fill: var(--green-soft);
+  stroke: var(--green);
+  stroke-width: 3.5;
+  filter: drop-shadow(0 0 10px var(--green-glow));
+}
+.node-group.done .node-label { color: var(--green); fill: var(--green); }
+.node-group.routing .node-label,
+.node-group.running .node-label,
+.node-group.done .node-label,
+.node-group.routing .node-note,
+.node-group.running .node-note,
+.node-group.done .node-note {
+  font-weight: 700;
+}
+
+/* ===== State Panel ===== */
+.state-panel-bg { fill: var(--card); stroke: var(--border); stroke-width: 1; rx: 8; }
+.state-panel-title { fill: var(--text); font-family: var(--font-cn); font-size: var(--fs-state-title); }
+.state-field-label { fill: var(--text-secondary); font-size: var(--fs-base); font-weight: 600; font-family: var(--font-latin); }
+.state-value {
+  fill: var(--text);
+  font-family: var(--font-mixed);
+  font-size: var(--fs-base);
+  font-weight: 500;
+}
+.state-value.long {
+  font-size: var(--fs-node-note);
+}
+.state-flash .state-panel-bg {
+  animation: panelGlow 0.7s ease;
+}
+.state-commit .state-panel-bg {
+  fill: var(--node-running-bg);
+  stroke: var(--accent);
+  stroke-width: 3;
+  filter: drop-shadow(0 0 14px var(--accent-glow-strong));
+}
+.state-commit .state-panel-title { fill: var(--accent); }
+
+/* ===== Callout Annotations ===== */
+.callout { opacity: 0; transition: opacity 0.6s ease, transform 0.6s ease; transform: translateY(8px); }
+.callout.show { opacity: 1; transform: translateY(0); }
+.callout-bg { fill: var(--surface); stroke: var(--border); stroke-width: 1; rx: 6; filter: drop-shadow(0 2px 8px var(--shadow-color-soft)); }
+.callout-title { fill: var(--accent); font-family: var(--font-cn); font-size: var(--fs-md); font-weight: 600; }
+.callout-desc { fill: var(--text-secondary); font-size: var(--fs-base); font-family: var(--font-cn); }
+.callout-line { stroke: var(--text-secondary); stroke-width: 2; fill: none; stroke-dasharray: 6 5;}
+
+/* ===== Stage Progress ===== */
+.stage-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 0 16px;
+}
+.stage-bar .dot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  border-radius: 24px;
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--text-muted);
+  border: 1.5px solid var(--border);
+  transition: all var(--transition);
+  cursor: pointer;
+  user-select: none;
+}
+.stage-bar .dot.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+.stage-bar .dot.done {
+  color: var(--green);
+  border-color: var(--green);
+  background: var(--green-light);
+}
+.stage-bar .connector {
+  width: 20px;
+  height: 1.5px;
+  background: var(--border);
+}
+.stage-desc {
+  padding: 20px 24px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: var(--fs-base);
+  line-height: 1.8;
+  color: var(--text-secondary);
+  min-height: 80px;
+}
+.stage-desc strong { color: var(--text); }
+.stage-legend {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  margin: 14px 0 4px;
+  color: var(--text-secondary);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.legend-swatch {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  background: var(--surface);
+}
+.legend-swatch.done { color: var(--green); background: var(--green-soft); }
+.legend-swatch.active { color: var(--accent); background: var(--node-running-bg); }
+.sec3-ctrl {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 14px;
+}
+.sec3-ctrl button {
+  padding: 10px 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mixed);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.sec3-ctrl button:hover { border-color: var(--accent); color: var(--accent); }
+.sec3-ctrl button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-inverse);
+}
+.sec3-ctrl button.primary:hover { background: var(--accent-strong); }
+
+/* ===== Timeline ===== */
+.timeline-wrap { margin-top: 16px; }
+.timeline-track {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  padding: 6px 4px 12px;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+}
+.timeline-track::-webkit-scrollbar { height: 5px; }
+.timeline-track::-webkit-scrollbar-track { background: var(--card); border-radius: 3px; }
+.timeline-track::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+.ss-card {
+  flex: 0 0 320px;
+  scroll-snap-align: start;
+  padding: 24px;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.ss-card:hover { border-color: var(--border-strong); }
+.ss-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-light);
+}
+.ss-card h3 {
+  font-family: var(--font-latin);
+  font-size: var(--fs-card-title);
+  font-weight: 400;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.ss-card .ss-sub {
+  font-size: var(--fs-ui);
+  color: var(--text-muted);
+  font-family: var(--font-mixed);
+  margin-bottom: 10px;
+}
+.ss-card .ss-desc {
+  font-size: var(--fs-ui);
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 14px;
+}
+.ss-card .ss-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 14px;
+}
+.ss-card .ss-tag {
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: var(--fs-sm);
+  font-family: var(--font-mixed);
+  font-weight: 500;
+  background: var(--accent-light);
+  color: var(--accent);
+  border: 1px solid var(--accent-border-soft);
+}
+.ss-card .ss-state-box {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  font-size: var(--fs-sm);
+}
+.ss-card .ss-state-item {
+  padding: 10px;
+  background: var(--card);
+  border-radius: 5px;
+  border: 1px solid var(--border);
+}
+.ss-card .ss-state-item .lbl { color: var(--text-secondary); font-size: var(--fs-2xs); font-weight: 600; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+.ss-card .ss-state-item .val { color: var(--text); font-family: var(--font-mixed); font-size: var(--fs-2xs); word-break: break-all; }
+
+.timeline-nav {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  align-items: center;
+  margin-top: 12px;
+}
+.timeline-nav button {
+  padding: 9px 22px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mixed);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.timeline-nav button:hover { border-color: var(--accent); color: var(--accent); }
+.timeline-nav .counter {
+  color: var(--text-muted);
+  font-size: var(--fs-base);
+  font-family: var(--font-mixed);
+  font-weight: 500;
+  min-width: 50px;
+  text-align: center;
+}
+
+main.timeline-mode #panel-4 .timeline-wrap {
+  margin-top: 0;
+  max-height: calc(100vh - 104px);
+  overflow-y: auto;
+  overflow-x: visible;
+  padding-right: 7px;
+}
+main.timeline-mode #panel-4 .timeline-track {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: visible;
+  padding: 4px 0;
+  scroll-snap-type: none;
+}
+main.timeline-mode #panel-4 .ss-card {
+  position: relative;
+  flex: none;
+  width: 100%;
+  padding: 12px;
+  scroll-snap-align: none;
+  transform-origin: top right;
+  transition: transform 0.22s ease, opacity 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+}
+main.timeline-mode #panel-4 .timeline-track:hover .ss-card {
+  opacity: 0.62;
+}
+main.timeline-mode #panel-4 .timeline-track:hover .ss-card:hover {
+  opacity: 1;
+  z-index: 50;
+  border-color: var(--accent);
+  box-shadow: 0 8px 26px var(--shadow-color-md), 0 0 0 3px var(--accent-light);
+}
+.hover-preview {
+  position: fixed;
+  z-index: 200;
+  pointer-events: none;
+  width: 100%;
+  padding: 12px;
+  max-height: calc((100vh - 24px) / 1.3);
+  overflow-y: auto;
+  transform: scale(1.3);
+  transform-origin: top right;
+  border-color: var(--accent) !important;
+  box-shadow: 0 12px 34px var(--shadow-color-md), 0 0 0 3px var(--accent-light) !important;
+}
+.hover-preview .ss-card-inner {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.hover-preview h3 {
+  font-size: var(--fs-md);
+  margin-bottom: 2px;
+}
+.hover-preview .ss-sub {
+  font-size: var(--fs-sm);
+  margin-bottom: 6px;
+}
+.hover-preview .ss-desc {
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+.hover-preview .ss-tags {
+  gap: 4px;
+  margin-bottom: 0;
+}
+.hover-preview .ss-tag {
+  padding: 2px 7px;
+  font-size: var(--fs-2xs);
+}
+.hover-preview .ss-state-box {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+.hover-preview .ss-state-item {
+  min-width: 0;
+  padding: 5px;
+}
+.hover-preview .ss-state-item .lbl {
+  font-size: var(--fs-xxs);
+  margin-bottom: 2px;
+  white-space: nowrap;
+}
+.hover-preview .ss-state-item .lbl-tight {
+  line-height: 0.85;
+  white-space: normal;
+}
+.hover-preview .ss-state-item .val {
+  font-size: var(--fs-xxs);
+  line-height: 1.25;
+  word-break: break-all;
+}
+main.timeline-mode #panel-4 .ss-card-inner {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+main.timeline-mode #panel-4 .ss-card h3 {
+  font-size: var(--fs-md);
+  margin-bottom: 2px;
+}
+main.timeline-mode #panel-4 .ss-card .ss-sub {
+  font-size: var(--fs-sm);
+  margin-bottom: 6px;
+}
+main.timeline-mode #panel-4 .ss-card .ss-desc {
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+main.timeline-mode #panel-4 .ss-card .ss-tags {
+  gap: 4px;
+  margin-bottom: 0;
+}
+main.timeline-mode #panel-4 .ss-card .ss-tag {
+  padding: 2px 7px;
+  font-size: var(--fs-2xs);
+}
+main.timeline-mode #panel-4 .ss-card .ss-state-box {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+main.timeline-mode #panel-4 .ss-card .ss-state-item {
+  min-width: 0;
+  padding: 5px;
+}
+main.timeline-mode #panel-4 .ss-card .ss-state-item .lbl {
+  font-size: var(--fs-xxs);
+  margin-bottom: 2px;
+  white-space: nowrap;
+}
+main.timeline-mode #panel-4 .ss-card .ss-state-item .lbl-tight {
+  line-height: 0.85;
+  white-space: normal;
+}
+main.timeline-mode #panel-4 .ss-card .ss-state-item .val {
+  font-size: var(--fs-xxs);
+  line-height: 1.25;
+  word-break: break-all;
+}
+main.timeline-mode #panel-4 .timeline-nav {
+  margin-top: 10px;
+}
+main.timeline-mode #panel-4 .timeline-nav button {
+  padding: 7px 12px;
+}
+
+@media (max-width: 980px) {
+  main.timeline-mode,
+  main.superstep-mode {
+    display: block;
+    max-width: 1360px;
+    padding: 0 16px 40px;
+  }
+  main.superstep-mode #panel-3 {
+    display: block;
+  }
+  main.superstep-mode #panel-3 .section-card {
+    margin-top: 16px;
+  }
+  main.timeline-mode #panel-4 {
+    position: static;
+    width: auto;
+    height: auto;
+    padding: 0;
+    overflow: visible;
+    background: transparent;
+    border-left: none;
+  }
+  main.timeline-mode #panel-4 .section-card {
+    margin-top: 16px;
+  }
+  main.timeline-mode #panel-4 .timeline-track {
+    overflow-x: auto;
+  }
+}
+
+/* ===== Animation Keyframes ===== */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes dashFlow {
+  to { stroke-dashoffset: -26; }
+}
+@keyframes pulseGlow {
+  0%, 100% { filter: drop-shadow(0 0 3px var(--accent-pulse)); }
+  50% { filter: drop-shadow(0 0 10px var(--accent-pulse-strong)); }
+}
+@keyframes panelGlow {
+  0% { stroke: var(--border); }
+  40% { stroke: var(--accent); }
+  100% { stroke: var(--border); }
+}
+
+/* ===== Utility ===== */
+.ctrl-btn {
+  padding: 10px 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mixed);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.ctrl-btn:hover { border-color: var(--accent); color: var(--accent); }
+.inline-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.inline-action-row p {
+  margin: 0;
+}
+@media (max-width: 720px) {
+  .inline-action-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 640px) {
+  .page-header { padding: 32px 16px 8px; }
+  .page-header h1 { font-size: var(--fs-title-mobile); }
+  .stepper .step { font-size: var(--fs-sm); padding: 10px 8px; }
+  .stepper .step .num { width: 18px; height: 18px; line-height: 18px; font-size: var(--fs-2xs); margin-right: 4px; }
+  .ss-card { flex: 0 0 270px; }
+  .stage-bar .dot { font-size: var(--fs-node-note); padding: 6px 12px; }
+  .section-card { padding: 16px 18px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ===== Header ===== -->
+<div class="page-header">
+  <h1>LangGraph <em>Runtime</em> 运行图</h1>
+  <p>理解 Node · Edge · State 三要素与 Superstep 执行机制</p>
+</div>
+
+<!-- ===== Stepper ===== -->
+<nav class="stepper">
+  <button class="step active" data-sec="1"><span class="num">1</span>运行时图</button>
+  <button class="step" data-sec="2"><span class="num">2</span>标注三要素</button>
+  <button class="step" data-sec="3"><span class="num">3</span>Superstep 剖析</button>
+  <button class="step" data-sec="4"><span class="num">4</span>执行序列</button>
+</nav>
+
+<!-- ===== Main ===== -->
+<main>
+  <div class="graph-area">
+    <svg id="main-svg" viewBox="0 0 1120 500" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="var(--edge)"/>
+        </marker>
+        <marker id="arrow-dim" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="var(--edge-dim)"/>
+        </marker>
+        <marker id="arrow-active" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="var(--accent)"/>
+        </marker>
+        <marker id="arrow-done" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="var(--green)"/>
+        </marker>
+        <filter id="glow-amber">
+          <feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="shadow">
+          <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="var(--shadow-color-soft)"/>
+        </filter>
+      </defs>
+
+      <!-- === Edges === -->
+      <g id="edges-grp">
+        <path class="edge-line" id="e-1" d="M 285,100 L 285,133" marker-end="url(#arrow)"/>
+        <path class="edge-line" id="e-2" d="M 285,202 L 285,273" marker-end="url(#arrow)"/>
+        <path class="edge-line" id="e-3" d="M 285,342 L 285,382" marker-end="url(#arrow)"/>
+      </g>
+
+      <!-- === Nodes === -->
+      <g id="nodes-grp">
+        <!-- START -->
+        <g class="node-group" id="n-START">
+          <ellipse class="node-bg special" cx="285" cy="70" rx="34" ry="30"/>
+          <text class="node-label special" x="285" y="71">START</text>
+        </g>
+        <!-- node_1 -->
+        <g class="node-group" id="n-node_1">
+          <rect class="node-bg" x="117" y="138" width="337" height="64" rx="8" filter="url(#shadow)"/>
+          <text class="node-label" x="285" y="155">node_1</text>
+          <text class="node-note" x="285" y="190" text-anchor="middle" fill="var(--node-subtext)" font-family="NSimSun, 新宋体, SimSun, 宋体, serif" font-size="var(--fs-node-note)">读取 State · 执行 · 返回更新</text>
+        </g>
+        <!-- node_2 -->
+        <g class="node-group" id="n-node_2">
+          <rect class="node-bg" x="117" y="278" width="337" height="64" rx="8" filter="url(#shadow)"/>
+          <text class="node-label" x="285" y="295">node_2</text>
+          <text class="node-note" x="285" y="330" text-anchor="middle" fill="var(--node-subtext)" font-family="NSimSun, 新宋体, SimSun, 宋体, serif" font-size="var(--fs-node-note)">读取 State · 执行 · 返回更新</text>
+        </g>
+        <!-- END -->
+        <g class="node-group" id="n-END">
+          <ellipse class="node-bg special" cx="285" cy="415" rx="34" ry="28"/>
+          <text class="node-label special" x="285" y="416">END</text>
+        </g>
+      </g>
+
+      <!-- === State Panel === -->
+      <g id="state-panel" transform="translate(650, 50)">
+        <rect class="state-panel-bg" width="385" height="215" rx="8"/>
+        <rect x="1" y="1" width="383" height="38" rx="7" fill="var(--accent-soft)"/>
+        <text class="state-panel-title" x="177" y="27" text-anchor="middle">State 快照</text>
+        <line x1="16" y1="42" x2="339" y2="42" stroke="var(--border)" stroke-width="1"/>
+        <text class="state-field-label" x="20" y="68">logs</text>
+        <text id="state-logs" class="state-value long" x="20" y="92">[]</text>
+        <text class="state-field-label" x="20" y="130">cur_id</text>
+        <text id="state-curid" class="state-value" x="20" y="154">"start"</text>
+        <text id="state-step" class="state-value" x="20" y="193" fill="var(--text-muted)" font-size="13" font-weight="400">step: 0</text>
+      </g>
+
+      <!-- === Section 2 Annotations === -->
+      <g id="sec2-grp" style="display:none">
+        <!-- Node callout → points to node_1 left edge -->
+        <g class="callout" id="c-node">
+          <path class="callout-line" d="M 28,66 L 10,66 L 10,170 L 112,170" marker-end="url(#arrow-active)"/>
+          <rect class="callout-bg" x="28" y="30" width="180" height="72"/>
+          <text class="callout-title" x="42" y="56">Node 执行单元</text>
+          <text class="callout-desc" x="42" y="84">返回局部更新</text>
+        </g>
+        <!-- Edge callout → points to edge e-2 (node1→node2) -->
+        <g class="callout" id="c-edge">
+          <path class="callout-line" d="M 462,395 L 462,240 L 293,240" marker-end="url(#arrow-active)"/>
+          <rect class="callout-bg" x="362" y="395" width="200" height="58"/>
+          <text class="callout-title" x="376" y="419">Edge 流转关系</text>
+          <text class="callout-desc" x="376" y="441">定义节点间执行顺序</text>
+        </g>
+        <!-- State callout → points to state panel left edge -->
+        <g class="callout" id="c-state">
+          <path class="callout-line" d="M 828,375 L 828,270" marker-end="url(#arrow-active)"/>
+          <rect class="callout-bg" x="684" y="375" width="288" height="72"/>
+          <text class="callout-title" x="698" y="401">State 共享状态</text>
+          <text class="callout-desc" x="698" y="429">节点间传递信息的核心载体</text>
+        </g>
+      </g>
+
+      <!-- === Section 3 Overlay === -->
+      <g id="sec3-grp" style="display:none">
+        <!-- tokens will be added here -->
+      </g>
+    </svg>
+  </div>
+
+  <!-- ===== Section 1: Runtime Graph ===== -->
+  <div class="section-panel active" id="panel-1">
+    <div class="section-card">
+      一个简单的 <strong>线性图</strong>：<code>START → node_1 → node_2 → END</code>。每个节点读取当前 <strong>State</strong>，执行业务逻辑，返回对 State 的局部更新。右侧面板记录真实 checkpoint 快照；<code>END</code> 是终止边界，不会产生额外的节点执行快照。
+    </div>
+  </div>
+
+  <!-- ===== Section 2: Annotations ===== -->
+  <div class="section-panel" id="panel-2">
+    <div class="section-card">
+      <div class="inline-action-row">
+        <p><strong>运行时三要素</strong> —— 点击下方按钮，依次查看各要素在图中的位置与作用。</p>
+        <button class="ctrl-btn" id="btn-anno">显示标注</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Section 3: Superstep Deep Dive ===== -->
+  <div class="section-panel" id="panel-3">
+    <div class="section-card">
+      <div class="stage-bar" id="stage-bar">
+        <span class="dot active" data-s="0"><span>①</span> 路由</span>
+        <span class="connector"></span>
+        <span class="dot" data-s="1"><span>②</span> 执行</span>
+        <span class="connector"></span>
+        <span class="dot" data-s="2"><span>③</span> 提交</span>
+      </div>
+      <div class="stage-desc" id="stage-desc">
+        <strong>① 路由阶段（Plan / Routing）</strong>：根据当前 State 和 Edge 逻辑，确定本轮应执行的节点。<br>
+        node_1 执行完毕，出边指向 <strong>node_2</strong>，node_2 被选中为下一轮执行节点。
+      </div>
+      <div class="stage-legend" aria-label="图例">
+        <span class="legend-item"><span class="legend-swatch done"></span>绿色：已执行完毕</span>
+        <span class="legend-item"><span class="legend-swatch active"></span>黄色：正在处理</span>
+      </div>
+      <div class="sec3-ctrl">
+        <button id="s3-prev">← 上一步</button>
+        <button id="s3-auto" class="primary">▶ 自动播放</button>
+        <button id="s3-next">下一步 →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Section 4: Timeline ===== -->
+  <div class="section-panel" id="panel-4">
+    <div class="section-card">
+      <p style="margin-bottom:14px;"><strong>Checkpoint 快照序列</strong> —— 按历史记录还原 <code>metadata.step</code>、<code>next</code> 与 State。节点执行结果会出现在对应快照的 <code>tasks.result</code> 中。</p>
+      <div class="timeline-wrap">
+        <div class="timeline-track" id="tl-track"></div>
+        <div class="timeline-nav">
+          <button id="tl-prev">← 上一个</button>
+          <span class="counter" id="tl-count">1 / 4</span>
+          <button id="tl-next">下一个 →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+// ========================================================================
+// DATA
+// ========================================================================
+const CHECKPOINTS = [
+  {
+    id:1, step:-1, title:'Input Checkpoint', sub:'next = __start__',
+    desc:'输入快照由 graph.invoke 的入参创建。此时 __start__ 任务携带原始输入，尚未进入用户节点。',
+    activeNode:'START', activeEdge:null,
+    state:{ logs:'[]', cur_id:'尚未写入 values' },
+    next:'__start__',
+    tags:['source: input','task: __start__'],
+  },
+  {
+    id:2, step:0, title:'Checkpoint step 0', sub:'next = node_1',
+    desc:'__start__ 的输入被写入 State，logs 使用 add reducer 得到空列表默认值。下一步将执行 node_1。',
+    activeNode:'node_1', activeEdge:'e-1',
+    state:{ logs:'[]', cur_id:'start' },
+    next:'node_1',
+    tags:['source: loop','task: node_1'],
+  },
+  {
+    id:3, step:1, title:'Checkpoint step 1', sub:'next = node_2',
+    desc:'node_1 已执行完成，tasks.result 中记录它的输出；合并后 State 更新为 start, node_1。下一步将执行 node_2。',
+    activeNode:'node_2', activeEdge:'e-2',
+    state:{ logs:'[ "node_1 运行完毕" ]', cur_id:'start, node_1' },
+    next:'node_2',
+    tags:['source: loop','task: node_2'],
+  },
+  {
+    id:4, step:2, title:'Checkpoint step 2', sub:'next = ()',
+    desc:'node_2 已执行完成，输出合并进 State。next 为空元组，说明图已经到达 END 并结束，没有额外的 step 3。',
+    activeNode:null, activeEdge:'e-3',
+    state:{ logs:'[ "node_1 运行完毕", "node_2 运行完毕" ]', cur_id:'start, node_1, node_2' },
+    next:'()',
+    tags:['source: loop','final'],
+  },
+];
+
+// ========================================================================
+// STATE
+// ========================================================================
+const st = { section:1, s3stage:0, s3playing:false, tlIdx:0 };
+
+// ========================================================================
+// HELPERS
+// ========================================================================
+function nEl(id) { return document.getElementById('n-'+id); }
+function eEl(id) { return document.getElementById(id); }
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function resetViz() {
+  document.querySelectorAll('.edge-line').forEach(el => {
+    el.classList.remove('active','flowing','dimmed','done');
+    el.setAttribute('marker-end','url(#arrow)');
+  });
+  document.querySelectorAll('.node-group').forEach(el => {
+    el.classList.remove('dimmed','routing','running','done');
+  });
+  document.getElementById('state-panel').classList.remove('state-commit');
+  const sec3 = document.getElementById('sec3-grp');
+  if (sec3) sec3.innerHTML = '';
+  document.querySelectorAll('.callout').forEach(c => c.classList.remove('show'));
+}
+
+function setEdgeState(id, state) {
+  const el = eEl(id); if (!el) return;
+  el.classList.remove('active','flowing','dimmed','done');
+  if (state==='active') { el.classList.add('active'); el.setAttribute('marker-end','url(#arrow-active)'); }
+  else if (state==='route') { el.classList.add('active','flowing'); el.setAttribute('marker-end','url(#arrow-active)'); }
+  else if (state==='dim') { el.classList.add('dimmed'); el.setAttribute('marker-end','url(#arrow-dim)'); }
+  else if (state==='done') { el.classList.add('done'); el.setAttribute('marker-end','url(#arrow-done)'); }
+  else { el.setAttribute('marker-end','url(#arrow)'); }
+}
+
+function setNodeState(id, state) {
+  const el = nEl(id); if (!el) return;
+  el.classList.remove('dimmed','routing','running','done');
+  if (state) el.classList.add(state);
+}
+
+function markCommitStatePanel() {
+  const panel = document.getElementById('state-panel');
+  panel.classList.add('state-commit');
+  panel.classList.remove('state-flash');
+  void panel.offsetWidth;
+  panel.classList.add('state-flash');
+}
+
+// ========================================================================
+// STATE PANEL
+// ========================================================================
+function updateState(logs, curId, step) {
+  document.getElementById('state-logs').textContent = logs;
+  document.getElementById('state-curid').textContent = curId;
+  document.getElementById('state-step').textContent = 'step: '+step;
+  const panel = document.getElementById('state-panel');
+  panel.classList.remove('state-flash');
+  void panel.offsetWidth;
+  panel.classList.add('state-flash');
+}
+
+// ========================================================================
+// SECTION SWITCH
+// ========================================================================
+function switchSection(n) {
+  st.section = n;
+  hideHoverPreview();
+  document.querySelector('main').classList.toggle('timeline-mode', n===4);
+  document.querySelector('main').classList.toggle('superstep-mode', n===3);
+  document.querySelectorAll('.stepper .step').forEach(b => b.classList.toggle('active',+b.dataset.sec===n));
+  for (let i=1;i<=4;i++) document.getElementById('panel-'+i).classList.toggle('active',i===n);
+  document.getElementById('sec2-grp').style.display = n===2 ? '' : 'none';
+  document.getElementById('sec3-grp').style.display = n===3 ? '' : 'none';
+  resetViz();
+  if (n===1) updateState('[]','start',0);
+  else if (n===2) resetAnnotations();
+  else if (n===3) setupS3();
+  else if (n===4) renderTimeline(0);
+}
+
+// ========================================================================
+// SECTION 2: ANNOTATIONS
+// ========================================================================
+let annoTimer = null;
+function resetAnnotations() {
+  if (annoTimer) clearTimeout(annoTimer);
+  document.querySelectorAll('.callout').forEach(c => c.classList.remove('show'));
+}
+function playAnnotations() {
+  resetAnnotations();
+  document.querySelectorAll('.callout').forEach((c,i) => {
+    annoTimer = setTimeout(() => c.classList.add('show'), 400 + i*900);
+  });
+}
+document.getElementById('btn-anno').addEventListener('click',playAnnotations);
+
+// ========================================================================
+// SECTION 3: DEEP DIVE
+// ========================================================================
+function setupS3() {
+  st.s3stage = 0; st.s3playing = false;
+  document.getElementById('sec3-grp').innerHTML = '';
+  applyS3(0);
+}
+
+function applyS3(stage) {
+  resetViz();
+  document.getElementById('sec3-grp').innerHTML = '';
+  document.querySelectorAll('#stage-bar .dot').forEach((d,i) => {
+    d.classList.toggle('active',i===stage);
+    d.classList.toggle('done',i<stage);
+  });
+  const desc = document.getElementById('stage-desc');
+
+  // Focus on Superstep 2: node_1 → node_2
+  if (stage === 0) {
+    // === ROUTING ===
+    desc.innerHTML = `<strong>① 路由阶段（Plan / Routing）</strong>：根据当前 State 和 Edge 逻辑，确定本轮选中的节点。<br>` +
+      `上一轮 node_1 已执行完毕（<strong>完成</strong>），出边 <code>node_1 → node_2</code> 被触发；此时只标注路由方向，node_2 尚未开始执行。`;
+    document.querySelectorAll('.node-group').forEach(n => n.classList.add('dimmed'));
+    document.querySelectorAll('.edge-line').forEach(e => setEdgeState(e.id,'dim'));
+    setNodeState('START','done');
+    setNodeState('node_1','done');
+    setEdgeState('e-1','done');
+    setEdgeState('e-2','route');
+  } else if (stage === 1) {
+    // === EXECUTION ===
+    desc.innerHTML = `<strong>② 执行阶段（Execution）</strong>：选中的节点开始执行。<br>` +
+      `node_2 读取当前 State 快照（<code>logs: ["node_1 运行完毕"]</code>, <code>cur_id: "start, node_1"</code>），` +
+      `独立执行函数逻辑，产生对 State 的局部更新。此阶段产生的更新<strong>暂不提交</strong>到全局 State。`;
+    document.querySelectorAll('.node-group').forEach(n => n.classList.add('dimmed'));
+    document.querySelectorAll('.edge-line').forEach(e => setEdgeState(e.id,'dim'));
+    setNodeState('START','done');
+    setNodeState('node_1','done');
+    setNodeState('node_2','running');
+    setEdgeState('e-1','done');
+    setEdgeState('e-2','active');
+  } else if (stage === 2) {
+    // === COMMIT ===
+    desc.innerHTML = `<strong>③ 状态更新阶段（Update / Commit）</strong>：所有节点执行完毕，输出<strong>合并</strong>到 State。<br>` +
+      `node_2 的返回结果统一提交：<code>logs</code> 追加 "node_2 运行完毕"，<code>cur_id</code> 更新为 "start, node_1, node_2"。` +
+      `生成新快照 → 无更多可执行节点，图运行结束。`;
+    document.querySelectorAll('.node-group').forEach(n => n.classList.add('dimmed'));
+    document.querySelectorAll('.edge-line').forEach(e => setEdgeState(e.id,'dim'));
+    setNodeState('START','done');
+    setNodeState('node_1','done');
+    setNodeState('node_2','done');
+    setEdgeState('e-1','done');
+    setEdgeState('e-2','done');
+    updateState('[ "node_1 运行完毕", "node_2 运行完毕" ]', 'start, node_1, node_2', 2);
+    markCommitStatePanel();
+  }
+}
+
+function addToken(pathEl, color) {
+  if (!pathEl) return;
+  const grp = document.getElementById('sec3-grp');
+  const len = pathEl.getTotalLength();
+  const dot = document.createElementNS('http://www.w3.org/2000/svg','circle');
+  dot.setAttribute('r','5'); dot.setAttribute('fill',color);
+  dot.setAttribute('filter','url(#glow-amber)');
+  grp.appendChild(dot);
+  const dur = 700, start = performance.now();
+  function step(now) {
+    const p = Math.min((now-start)/dur,1);
+    const pt = pathEl.getPointAtLength(p*len);
+    dot.setAttribute('cx',pt.x); dot.setAttribute('cy',pt.y);
+    if (p<1) requestAnimationFrame(step); else setTimeout(()=>dot.remove(),300);
+  }
+  requestAnimationFrame(step);
+}
+
+// S3 controls
+document.getElementById('s3-prev').addEventListener('click',()=>{
+  if (st.s3stage>0) { st.s3stage--; applyS3(st.s3stage); }
+});
+document.getElementById('s3-next').addEventListener('click',()=>{
+  if (st.s3stage<2) { st.s3stage++; applyS3(st.s3stage); }
+});
+document.querySelectorAll('#stage-bar .dot').forEach(dot => {
+  dot.addEventListener('click', () => {
+    st.s3stage = +dot.dataset.s;
+    applyS3(st.s3stage);
+  });
+});
+document.getElementById('s3-auto').addEventListener('click',async function(){
+  if (st.s3playing) return;
+  st.s3playing = true; this.textContent='播放中...'; this.disabled = true;
+  st.s3stage = 0;
+  for (let i=0;i<=2;i++) {
+    st.s3stage = i; applyS3(i);
+    await new Promise(r => setTimeout(r, 2400));
+  }
+  st.s3playing = false; this.textContent='▶ 自动播放'; this.disabled = false;
+});
+
+// ========================================================================
+// SECTION 4: TIMELINE
+// ========================================================================
+let hoverPreview = null;
+
+function hideHoverPreview() {
+  if (hoverPreview) {
+    hoverPreview.remove();
+    hoverPreview = null;
+  }
+}
+
+function showHoverPreview(card) {
+  hideHoverPreview();
+  if (!document.querySelector('main').classList.contains('timeline-mode')) return;
+
+  const scale = 1.3;
+  const viewportGap = 12;
+  const rect = card.getBoundingClientRect();
+  const clone = card.cloneNode(true);
+  clone.classList.add('hover-preview');
+  clone.style.width = `${rect.width}px`;
+  clone.style.left = `${rect.left}px`;
+  clone.style.top = `${viewportGap}px`;
+  clone.style.visibility = 'hidden';
+  document.body.appendChild(clone);
+
+  const scaledHeight = clone.offsetHeight * scale;
+  const maxTop = window.innerHeight - scaledHeight - viewportGap;
+  const safeTop = Math.max(viewportGap, Math.min(rect.top, maxTop));
+  clone.style.top = `${safeTop}px`;
+  clone.style.visibility = 'visible';
+
+  hoverPreview = clone;
+}
+
+function renderTimeline(idx) {
+  const track = document.getElementById('tl-track');
+  hideHoverPreview();
+  track.innerHTML = '';
+  CHECKPOINTS.forEach((ss,i) => {
+    const card = document.createElement('div');
+    card.className = 'ss-card'+(i===idx?' active':'');
+    card.dataset.idx = i;
+    card.innerHTML = `
+      <h3>${ss.title}</h3>
+      <div class="ss-sub">${ss.sub}</div>
+      <p class="ss-desc">${ss.desc}</p>
+      <div class="ss-tags">${ss.tags.map(t=>`<span class="ss-tag">${t}</span>`).join('')}</div>
+      <div class="ss-state-box">
+        <div class="ss-state-item"><div class="lbl lbl-tight">metadata<br>.step</div><div class="val">${ss.step}</div></div>
+        <div class="ss-state-item"><div class="lbl">next</div><div class="val">${ss.next}</div></div>
+        <div class="ss-state-item"><div class="lbl">logs</div><div class="val">${ss.state.logs}</div></div>
+        <div class="ss-state-item"><div class="lbl">cur_id</div><div class="val">${ss.state.cur_id}</div></div>
+      </div>`;
+    card.addEventListener('click',()=>setTL(i));
+    card.addEventListener('mouseenter',()=>showHoverPreview(card));
+    card.addEventListener('mouseleave',hideHoverPreview);
+    track.appendChild(card);
+  });
+  setTL(idx);
+}
+
+function setTL(idx) {
+  hideHoverPreview();
+  st.tlIdx = idx;
+  const ss = CHECKPOINTS[idx];
+  document.querySelectorAll('.ss-card').forEach((c,i)=>c.classList.toggle('active',i===idx));
+  document.getElementById('tl-count').textContent = `${idx+1} / ${CHECKPOINTS.length}`;
+  const cards = document.querySelectorAll('.ss-card');
+  if (cards[idx]) cards[idx].scrollIntoView({behavior:'smooth',inline:'center',block:'nearest'});
+  resetViz();
+  document.querySelectorAll('.node-group').forEach(n=>n.classList.add('dimmed'));
+  document.querySelectorAll('.edge-line').forEach(e=>setEdgeState(e.id,'dim'));
+  if (idx === 0) {
+    setNodeState('START','routing');
+  } else if (idx === 1) {
+    setNodeState('START','done');
+    setNodeState('node_1','routing');
+    setEdgeState('e-1','route');
+  } else if (idx === 2) {
+    setNodeState('START','done');
+    setNodeState('node_1','done');
+    setNodeState('node_2','routing');
+    setEdgeState('e-1','done');
+    setEdgeState('e-2','route');
+  } else if (idx === 3) {
+    setNodeState('START','done');
+    setNodeState('node_1','done');
+    setNodeState('node_2','done');
+    setNodeState('END','done');
+    setEdgeState('e-1','done');
+    setEdgeState('e-2','done');
+    setEdgeState('e-3','active');
+    markCommitStatePanel();
+  }
+  if (ss.state) updateState(ss.state.logs, ss.state.cur_id, ss.step);
+}
+
+document.getElementById('tl-prev').addEventListener('click',()=>{ if(st.tlIdx>0) setTL(st.tlIdx-1); });
+document.getElementById('tl-next').addEventListener('click',()=>{ if(st.tlIdx<CHECKPOINTS.length-1) setTL(st.tlIdx+1); });
+
+// ========================================================================
+// INIT
+// ========================================================================
+document.querySelectorAll('.stepper .step').forEach(b => b.addEventListener('click',()=>switchSection(+b.dataset.sec)));
+document.addEventListener('DOMContentLoaded',()=>{
+  updateState('[]','start',0);
+  switchSection(1);
+});
+</script>
+</body>
+</html>
