@@ -1,0 +1,27 @@
+# ===== Web 框架 =====
+fastapi>=0.142.0
+uvicorn>=0.54.0
+python-multipart>=0.0.32
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# ===== RAG 核心 =====
+langchain>=0.3.26
+langchain-core>=0.3.71
+langchain-community>=0.3.27
+
+# ===== 向量与检索 =====
+sentence-transformers>=3.0.0
+pymilvus==2.5.11
+rank-bm25==0.2.2
+
+# ===== 图数据库 =====
+neo4j>=5.26.0
+
+# ===== LLM（DeepSeek 走 OpenAI 兼容接口） =====
+openai>=1.86.0,<2.0.0
+
+# ===== 工具 =====
+python-dotenv>=1.0.0
+numpy>=1.24.0
+requests>=2.28.0
