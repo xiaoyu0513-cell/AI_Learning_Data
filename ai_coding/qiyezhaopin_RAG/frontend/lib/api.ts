@@ -10,14 +10,22 @@ import type {
 
 const BASE = "/api";
 
+async function readJSON<T>(res: Response): Promise<T> {
+  const body = await res.json();
+  if (!res.ok) {
+    throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`);
+  }
+  return body as T;
+}
+
 export async function getHealth(): Promise<Health> {
   const res = await fetch(`${BASE}/health`, { cache: "no-store" });
-  return res.json();
+  return readJSON(res);
 }
 
 export async function getStats(): Promise<Stats> {
   const res = await fetch(`${BASE}/stats`, { cache: "no-store" });
-  return res.json();
+  return readJSON(res);
 }
 
 export async function searchNodes(
@@ -27,7 +35,7 @@ export async function searchNodes(
   const res = await fetch(
     `${BASE}/graph/search?query=${encodeURIComponent(query)}&limit=${limit}`,
   );
-  return res.json();
+  return readJSON(res);
 }
 
 export async function getSubgraph(
@@ -38,7 +46,7 @@ export async function getSubgraph(
   const res = await fetch(
     `${BASE}/graph/subgraph?node_id=${encodeURIComponent(nodeId)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`,
   );
-  return res.json();
+  return readJSON(res);
 }
 
 export async function getGap(candidate: string, job: string): Promise<GapResult> {
@@ -47,7 +55,7 @@ export async function getGap(candidate: string, job: string): Promise<GapResult>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ candidate, job }),
   });
-  return res.json();
+  return readJSON(res);
 }
 
 export async function getWhatIf(
@@ -59,7 +67,7 @@ export async function getWhatIf(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ candidate, acquired_skills: acquiredSkills }),
   });
-  return res.json();
+  return readJSON(res);
 }
 
 export async function buildKnowledgeBase(force = false): Promise<{
@@ -72,7 +80,7 @@ export async function buildKnowledgeBase(force = false): Promise<{
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ force }),
   });
-  return res.json();
+  return readJSON(res);
 }
 
 /** 通过 fetch + ReadableStream 消费后端 POST /api/chat 的 SSE 流 */
@@ -82,10 +90,15 @@ export async function streamChat(
   signal?: AbortSignal,
   topK = 5,
 ): Promise<void> {
+  let sessionId = sessionStorage.getItem("recruitment-rag-session");
+  if (!sessionId) {
+    sessionId = crypto.randomUUID();
+    sessionStorage.setItem("recruitment-rag-session", sessionId);
+  }
   const res = await fetch(`${BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, top_k: topK }),
+    body: JSON.stringify({ query, top_k: topK, session_id: sessionId }),
     signal,
   });
   if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -94,25 +107,28 @@ export async function streamChat(
   const decoder = new TextDecoder();
   let buf = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
 
-    let idx: number;
-    while ((idx = buf.indexOf("\n\n")) >= 0) {
-      const raw = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      for (const line of raw.split("\n")) {
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (payload === "[DONE]") return;
-        try {
-          onEvent(JSON.parse(payload) as ChatEvent);
-        } catch {
-          // 忽略非法帧
+      let idx: number;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const raw = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of raw.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (payload === "[DONE]") return;
+          const event = JSON.parse(payload) as ChatEvent;
+          onEvent(event);
         }
       }
     }
+    throw new Error("SSE stream ended before [DONE]");
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }

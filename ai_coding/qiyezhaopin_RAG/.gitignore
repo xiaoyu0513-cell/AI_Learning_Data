@@ -24,6 +24,7 @@ coverage/
 # Database volumes and runtime logs
 /volumes/
 /.run/
+/backend/runtime/
 *.log
 
 # Local editor and OS files

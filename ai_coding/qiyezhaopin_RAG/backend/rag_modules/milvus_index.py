@@ -1,6 +1,6 @@
 """
 Milvus 向量索引构建模块（招聘领域）
-把岗位档案文档向量化后写入 Milvus，并提供向量检索接口。
+把岗位档案文档向量化后写入 Milvus,并提供向量检索接口。
 字段语义：company_name → job_name + node_id + category + location + seniority
 """
 import logging
@@ -16,7 +16,7 @@ from pymilvus import (
 )
 from langchain_core.documents import Document
 
-from .embedding import Embedder
+from .index_store import digest
 
 logger = logging.getLogger(__name__)
 
@@ -36,28 +36,37 @@ class MilvusIndexConstructionModule:
         self.port = port
         self.collection_name = collection_name
         self.dimension = dimension
-        self.embedder = Embedder(embedding_model)
+        self.embedding_model = embedding_model
+        self._embedder = None
+        self._connected = False
         self.collection: Optional[Collection] = None
-        self._connect()
+
+    @property
+    def embedder(self):
+        if self._embedder is None:
+            from .embedding import Embedder
+            self._embedder = Embedder(self.embedding_model)
+            if self._embedder.dimension != self.dimension:
+                raise ValueError("Embedding 维度与 Milvus schema 不匹配")
+        return self._embedder
 
     def _connect(self):
-        try:
-            connections.connect(alias="default", host=self.host, port=self.port)
-            logger.info("Milvus 连接成功: %s:%s", self.host, self.port)
-        except Exception as e:
-            logger.error("Milvus 连接失败: %s", e)
+        if not self._connected:
+            connections.connect(alias="default", host=self.host, port=self.port, timeout=5)
+            self._connected = True
 
     # ========== 集合管理 ==========
     def has_collection(self) -> bool:
-        try:
-            return utility.has_collection(self.collection_name)
-        except Exception:
-            return False
+        self._connect()
+        return utility.has_collection(self.collection_name, timeout=5)
 
     def _create_collection(self):
         fields = [
-            FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=4000),
+            FieldSchema(name="id", dtype=DataType.VARCHAR, max_length=128, is_primary=True, auto_id=False),
+            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=16000),
+            FieldSchema(name="content_hash", dtype=DataType.VARCHAR, max_length=64),
+            FieldSchema(name="skills", dtype=DataType.JSON),
+            FieldSchema(name="required_skills", dtype=DataType.JSON),
             FieldSchema(name="job_name", dtype=DataType.VARCHAR, max_length=256),
             FieldSchema(name="node_id", dtype=DataType.VARCHAR, max_length=128),
             FieldSchema(name="company", dtype=DataType.VARCHAR, max_length=128),
@@ -82,12 +91,12 @@ class MilvusIndexConstructionModule:
         if not self.has_collection():
             return False
         self.collection = Collection(self.collection_name)
-        self.collection.load()
+        self.collection.load(timeout=15)
         logger.info("Milvus 集合加载完成: %s", self.collection_name)
         return True
 
     # ========== 写入向量 ==========
-    def build_vector_index(self, documents: List[Document]) -> bool:
+    def build_vector_index(self, documents: List[Document], store=None) -> bool:
         if not documents:
             logger.warning("无可写入的文档")
             return False
@@ -97,11 +106,27 @@ class MilvusIndexConstructionModule:
             self.collection = Collection(self.collection_name)
 
         texts = [d.page_content for d in documents]
-        embeddings = self.embedder.encode_documents(texts)
+        keys = [digest([self.embedding_model, self.dimension, "bge-doc-v1", t]) for t in texts]
+        embeddings = [store.get_vector(k) if store else None for k in keys]
+        missing = [i for i, v in enumerate(embeddings) if v is None]
+        if missing:
+            encoded = self.embedder.encode_documents([texts[i] for i in missing])
+            if len(encoded) != len(missing):
+                raise ValueError("Embedding 返回数量不匹配")
+            for i, vector in zip(missing, encoded):
+                if len(vector) != self.dimension:
+                    raise ValueError("Embedding 返回维度不匹配")
+                embeddings[i] = vector
+                if store:
+                    store.put_vector(keys[i], vector)
 
         rows = [
             {
+                "id": d.metadata["node_id"],
                 "text": d.page_content,
+                "content_hash": d.metadata["content_hash"],
+                "skills": d.metadata.get("skills", []),
+                "required_skills": d.metadata.get("required_skills", []),
                 "job_name": d.metadata.get("job_name", ""),
                 "node_id": d.metadata.get("node_id", ""),
                 "company": d.metadata.get("company", ""),
@@ -114,29 +139,46 @@ class MilvusIndexConstructionModule:
             for d, emb in zip(documents, embeddings)
         ]
 
-        self.collection.insert(rows)
+        if any(len(row["text"].encode("utf-8")) > 16000 for row in rows):
+            raise ValueError("岗位档案超过 Milvus 文本字段上限，请拆分后导入")
+        self.collection.upsert(rows)
         self.collection.flush()
-        self.collection.load()
+        self.collection.load(timeout=15)
         logger.info("写入向量 %d 条", len(rows))
         return True
 
     # ========== 向量检索 ==========
-    def vector_search(self, query: str, top_k: int = 5) -> List[Document]:
+    def vector_search(self, query: str, top_k: int = 5, filters=None) -> List[Document]:
+        if top_k <= 0:
+            return []
+        if filters and filters.restrict_ids and not filters.job_ids:
+            return []
         if self.collection is None:
             if not self.load_collection():
                 return []
 
         query_vec = self.embedder.encode_query(query)
-        self.collection.load()
-
-        search_params = {"metric_type": "COSINE", "params": {"ef": 64}}
-        output_fields = ["text", "job_name", "node_id", "company", "category", "location", "salary_range", "seniority"]
+        search_params = {"metric_type": "COSINE", "params": {"ef": max(64, top_k)}}
+        output_fields = ["text", "job_name", "node_id", "company", "category", "location", "salary_range", "seniority", "skills", "required_skills", "content_hash"]
+        import json
+        clauses = []
+        if filters:
+            for field in ("location", "company", "seniority"):
+                value = getattr(filters, field)
+                if value:
+                    clauses.append(f"{field} == {json.dumps(value, ensure_ascii=False)}")
+            if filters.restrict_ids:
+                if not filters.job_ids:
+                    return []
+                clauses.append("node_id in " + json.dumps(filters.job_ids, ensure_ascii=False))
         results = self.collection.search(
             data=[query_vec],
             anns_field="embedding",
             param=search_params,
             limit=top_k,
             output_fields=output_fields,
+            expr=" and ".join(clauses) or None,
+            timeout=10,
         )
 
         documents = []
@@ -154,15 +196,17 @@ class MilvusIndexConstructionModule:
                         "seniority": hit.entity.get("seniority", ""),
                         "score": float(hit.score),
                         "search_type": "vector",
+                        "skills": hit.entity.get("skills", []),
+                        "required_skills": hit.entity.get("required_skills", []),
+                        "content_hash": hit.entity.get("content_hash", ""),
                     },
                 )
             )
-        return documents
+        return [d for d in documents if filters is None or filters.matches(d)]
 
     def get_collection_stats(self) -> Dict[str, Any]:
         if self.collection is None:
-            if not self.load_collection():
-                return {"row_count": 0}
+            return {"row_count": 0}
         try:
             return {"row_count": self.collection.num_entities}
         except Exception:

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
+from pydantic import Field
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -26,7 +27,7 @@ class Settings(BaseSettings):
     # ===== Milvus 向量库 =====
     milvus_host: str = "localhost"
     milvus_port: int = 19530
-    milvus_collection_name: str = "recruitment_knowledge"
+    milvus_collection_name: str = Field("recruitment_knowledge", pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,179}$")
     milvus_dimension: int = 512  # bge-small-zh-v1.5 向量维度
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
 
@@ -37,8 +38,22 @@ class Settings(BaseSettings):
     max_tokens: int = 2048
 
     # ===== 检索配置 =====
-    top_k: int = 5
-    max_graph_depth: int = 2
+    top_k: int = Field(5, ge=1, le=20)
+    max_graph_depth: int = Field(2, ge=1, le=3)
+    retrieval_candidates: int = Field(20, ge=1, le=100)
+    rerank_enabled: bool = False
+    rerank_model: str = "BAAI/bge-reranker-base"
+    rerank_batch_size: int = Field(8, ge=1, le=64)
+    request_timeout_seconds: float = Field(60, gt=0, le=600)
+    retrieval_timeout_seconds: float = Field(20, gt=0, le=120)
+    llm_timeout_seconds: float = Field(30, gt=0, le=180)
+    llm_max_retries: int = Field(1, ge=0, le=3)
+    context_max_chars: int = Field(18000, ge=1000, le=100000)
+    state_dir: str = str(BASE_DIR / "runtime")
+    langfuse_enabled: bool = False
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "http://localhost:3001"
 
     # ===== 数据 =====
     seed_path: str = str(BASE_DIR / "data" / "seed" / "jobs.json")

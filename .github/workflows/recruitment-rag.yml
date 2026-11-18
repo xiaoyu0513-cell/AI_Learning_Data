@@ -1,0 +1,45 @@
+name: Recruitment RAG checks
+on:
+  push:
+    paths: ['ai_coding/qiyezhaopin_RAG/**', '.github/workflows/recruitment-rag.yml']
+  pull_request:
+    paths: ['ai_coding/qiyezhaopin_RAG/**', '.github/workflows/recruitment-rag.yml']
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai_coding/qiyezhaopin_RAG
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: 'ai_coding/qiyezhaopin_RAG/backend/requirements*.txt'
+      - run: python -m pip install -r backend/requirements-test.txt
+      - run: python -m pytest -q -m 'not integration'
+        env:
+          DEEPSEEK_API_KEY: ''
+          LANGFUSE_ENABLED: 'false'
+          HF_HUB_OFFLINE: '1'
+      - run: python backend/evaluation/run.py --mode offline --output artifacts/evaluation-ci.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recruitment-rag-evaluation
+          path: ai_coding/qiyezhaopin_RAG/artifacts/evaluation-ci.json
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai_coding/qiyezhaopin_RAG/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ai_coding/qiyezhaopin_RAG/frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build

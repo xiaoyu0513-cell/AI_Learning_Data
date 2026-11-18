@@ -1,122 +1,59 @@
-"""
-图谱服务：子图提取、节点搜索、路径查找、人岗 Gap 分析
-"""
-import logging
-from typing import List, Dict, Any
-
-from neo4j import GraphDatabase
-
-logger = logging.getLogger(__name__)
+"""Graph exploration pinned to the active RAG snapshot."""
+from rag_modules.graph_snapshot import RELATIONS
 
 
 class GraphService:
-    def __init__(self, config):
+    def __init__(self, config, snapshot_provider=None):
         self.config = config
-        self.driver = None
-
-    def _connect(self):
-        if self.driver is None:
-            self.driver = GraphDatabase.driver(
-                self.config.neo4j_uri,
-                auth=(self.config.neo4j_user, self.config.neo4j_password),
-            )
-        return self.driver
+        self.snapshot_provider = snapshot_provider
 
     def close(self):
-        if self.driver:
-            self.driver.close()
-            self.driver = None
+        pass
 
-    @staticmethod
-    def _node_to_dict(n) -> Dict[str, Any]:
-        return {
-            "name": n.get("name") or n.get("description"),
-            "label": list(n.labels)[0] if n.labels else "",
-            "properties": dict(n),
-        }
+    def _graph(self):
+        if not self.snapshot_provider:
+            raise RuntimeError("活动图谱未初始化")
+        return self.snapshot_provider().graph
 
-    def search_nodes(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        self._connect()
-        with self.driver.session(database=self.config.neo4j_database) as s:
-            recs = s.run(
-                "MATCH (n) WHERE n.name CONTAINS $q "
-                "RETURN n.name AS name, labels(n)[0] AS label, id(n) AS id "
-                "LIMIT $limit",
-                q=query, limit=limit,
-            )
-            return [r.data() for r in recs]
+    def search_nodes(self, query, limit=10):
+        return self._graph().run(
+            "MATCH (n:RAGEntity {version:$version}) WHERE n.name CONTAINS $q "
+            "RETURN n.name AS name,n.kind AS label,n.nodeId AS id ORDER BY name LIMIT $limit",
+            q=query, limit=max(1, min(50, limit)))
 
-    def get_subgraph(self, node_id: str, max_depth: int = 2, max_nodes: int = 100) -> Dict[str, Any]:
-        self._connect()
-        with self.driver.session(database=self.config.neo4j_database) as s:
-            center_rec = s.run(
-                "MATCH (n) WHERE n.name = $name OR n.nodeId = $name RETURN n",
-                name=node_id,
-            ).single()
-            if not center_rec:
-                return {"nodes": [], "edges": []}
+    def get_subgraph(self, node_id, max_depth=2, max_nodes=100):
+        if not 1 <= max_depth <= 3 or not 1 <= max_nodes <= 150:
+            raise ValueError("图谱深度应为1至3，节点上限应为1至150")
+        graph = self._graph()
+        # Limit neighbour expansion in Cypher, not after collecting an unbounded graph.
+        nodes = graph.run(f"""
+            MATCH (center:RAGEntity {{version:$version}})
+            WHERE center.nodeId=$id OR center.name=$id
+            OPTIONAL MATCH path=(center)-[*1..{int(max_depth)}]-(n:RAGEntity)
+            WHERE all(v IN nodes(path) WHERE v.version=$version)
+            WITH center,n ORDER BY n.key LIMIT $limit
+            RETURN center,collect(DISTINCT n) AS neighbours
+        """, id=node_id, limit=max(1, max_nodes-1))
+        if not nodes:
+            return {"nodes": [], "edges": []}
+        found = {n["key"]: n for row in nodes for n in [row["center"]] + row["neighbours"]}
+        found = dict(list(found.items())[:max_nodes])
+        edges = graph.run("""
+            MATCH (a:RAGEntity {version:$version})-[r]->(b:RAGEntity {version:$version})
+            WHERE a.key IN $keys AND b.key IN $keys
+            RETURN a.nodeId AS source,b.nodeId AS target,type(r) AS type
+        """, keys=list(found))
+        return {"nodes": [{"id": n["nodeId"], "label": n["name"], "type": n["kind"],
+                           "properties": dict(n)} for n in found.values()], "edges": edges}
 
-            center = center_rec["n"]
-            rec = s.run(
-                f"""
-                MATCH (center) WHERE center.name = $name OR center.nodeId = $name
-                MATCH (center)-[r*1..{max_depth}]-(n)
-                RETURN collect(DISTINCT n) AS nodes
-                """,
-                name=node_id,
-            ).single()
-
-            all_nodes = [center]
-            if rec:
-                all_nodes += list(rec["nodes"])
-            all_nodes = all_nodes[:max_nodes]
-
-            names = [n.get("name") for n in all_nodes if n.get("name") is not None]
-            edges = []
-            if names:
-                edge_recs = s.run(
-                    """
-                    MATCH (a)-[r]->(b)
-                    WHERE a.name IN $names AND b.name IN $names
-                    RETURN a.name AS source, b.name AS target, type(r) AS type
-                    """,
-                    names=names,
-                )
-                edges = [e.data() for e in edge_recs]
-
-        vis_nodes = []
-        seen = set()
-        for n in all_nodes:
-            d = self._node_to_dict(n)
-            if d["name"] in seen:
-                continue
-            seen.add(d["name"])
-            vis_nodes.append({
-                "id": d["name"],
-                "label": d["name"],
-                "type": d["label"],
-                "properties": d["properties"],
-            })
-        return {"nodes": vis_nodes, "edges": edges}
-
-    def find_path(self, from_node: str, to_node: str) -> Dict[str, Any]:
-        self._connect()
-        with self.driver.session(database=self.config.neo4j_database) as s:
-            rec = s.run(
-                """
-                MATCH (a), (b)
-                WHERE (a.name = $from OR a.nodeId = $from) AND (b.name = $to OR b.nodeId = $to)
-                MATCH path = shortestPath((a)-[*..6]-(b))
-                RETURN [n IN nodes(path) | n.name] AS nodes,
-                       [r IN relationships(path) | type(r)] AS relations,
-                       length(path) AS hops
-                """,
-                **{"from": from_node, "to": to_node},
-            ).single()
-            if not rec:
-                return {"nodes": [], "relations": [], "hops": 0}
-            return {
-                "nodes": rec["nodes"],
-                "relations": rec["relations"],
-                "hops": rec["hops"],
-            }
+    def find_path(self, from_node, to_node):
+        result = self._graph().run("""
+            MATCH (a:RAGEntity {version:$version}),(b:RAGEntity {version:$version})
+            WHERE (a.nodeId=$source OR a.name=$source) AND (b.nodeId=$target OR b.name=$target)
+            MATCH path=shortestPath((a)-[*..6]-(b))
+            WHERE all(n IN nodes(path) WHERE n.version=$version)
+            RETURN [n IN nodes(path)|n.name] AS nodes,
+                   [r IN relationships(path)|type(r)] AS relations,length(path) AS hops
+            LIMIT 1
+        """, source=from_node, target=to_node)
+        return result[0] if result else {"nodes": [], "relations": [], "hops": 0}

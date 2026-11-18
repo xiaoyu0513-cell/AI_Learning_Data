@@ -105,7 +105,7 @@ function Citations({ citations }: { citations: Citation[] }) {
               <span className="ml-auto flex shrink-0 items-center gap-3">
                 <span className="text-[10px] text-muted">{c.source}</span>
                 <span className="font-mono text-[10px] text-accent-300">
-                  {Math.round((c.score ?? 0) * 100)}%
+                  {(c.score ?? 0).toFixed(4)}
                 </span>
               </span>
             </div>
@@ -243,6 +243,7 @@ export default function ChatPanel() {
       patch({ streaming: false, error: true });
       append("\n\n> ⚠️ 请求失败或已中断");
     } finally {
+      patch({ streaming: false });
       setStreaming(false);
     }
   };

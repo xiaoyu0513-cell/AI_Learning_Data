@@ -1,130 +1,211 @@
-"""
-招聘知识图谱 RAG 系统主控
-编排：数据建图 → 向量索引 → 双引擎检索 → 智能路由 → 生成
-"""
+"""Versioned recruitment RAG coordinator. Importing this file performs no I/O."""
 import logging
-from typing import List, Tuple, Optional
-
+from dataclasses import dataclass
+from threading import Lock
+from typing import List
+from langchain_core.documents import Document
 from config import config as default_config
-from rag_modules.llm import LLMClient
 from rag_modules.graph_data_preparation import GraphDataPreparationModule
 from rag_modules.milvus_index import MilvusIndexConstructionModule
 from rag_modules.hybrid_retrieval import HybridRetrievalModule
+from rag_modules.graph_snapshot import GraphSnapshot
 from rag_modules.graph_rag_retrieval import GraphRAGRetrieval
-from rag_modules.intelligent_query_router import IntelligentQueryRouter, QueryAnalysis
-from rag_modules.generation_integration import GenerationIntegrationModule
-from rag_modules.gap_analysis import GapAnalysisModule
+from rag_modules.intelligent_query_router import IntelligentQueryRouter
+from rag_modules.index_store import IndexStore, digest
+from rag_modules.query import parse_filters
+from rag_modules.reranker import Reranker
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 
-class RecruitmentGraphRAGSystem:
-    """招聘知识图谱智能问答系统"""
+@dataclass(frozen=True)
+class RetrievalSnapshot:
+    version: str
+    data: dict
+    documents: list
+    milvus: object
+    graph: object
+    hybrid: object
+    router: object
 
+
+class RecruitmentGraphRAGSystem:
     def __init__(self, config=None):
         self.config = config or default_config
-        self.seed_path = config.seed_path if hasattr(config, "seed_path") else "data/seed/jobs.json"
+        self.seed_path = self.config.seed_path
+        self.data_module = GraphDataPreparationModule(self.seed_path, self.config.neo4j_uri,
+            self.config.neo4j_user, self.config.neo4j_password, self.config.neo4j_database)
+        self._snapshot = None
+        self._retired = []
+        self._store = None
+        self._lock = Lock()
+        self._llm_lock = Lock()
+        self.llm = self.generation = None
+        self.reranker = Reranker(self.config)
 
-        # 基础模块（建库不需要 LLM）
-        self.data_module = GraphDataPreparationModule(
-            seed_path=self.seed_path,
-            uri=self.config.neo4j_uri,
-            user=self.config.neo4j_user,
-            password=self.config.neo4j_password,
-            database=self.config.neo4j_database,
-        )
-        self.milvus = MilvusIndexConstructionModule(
-            host=self.config.milvus_host,
-            port=self.config.milvus_port,
-            collection_name=self.config.milvus_collection_name,
-            dimension=self.config.milvus_dimension,
-            embedding_model=self.config.embedding_model,
-        )
-        self.hybrid = HybridRetrievalModule(self.config, self.milvus)
+    @property
+    def store(self):
+        if self._store is None:
+            self._store = IndexStore(self.config.state_dir)
+        return self._store
 
-        # 需要 LLM 的模块（惰性初始化）
-        self.llm: Optional[LLMClient] = None
-        self.graph: Optional[GraphRAGRetrieval] = None
-        self.router: Optional[IntelligentQueryRouter] = None
-        self.generation: Optional[GenerationIntegrationModule] = None
-        self.gap: Optional[GapAnalysisModule] = None
+    @property
+    def ready(self):
+        return self._snapshot is not None
 
-        self.ready = False
+    @property
+    def snapshot(self):
+        if self._snapshot is None:
+            raise RuntimeError("知识库尚未构建，请先构建索引")
+        return self._snapshot
 
-    # ========== LLM 惰性初始化 ==========
+    @property
+    def milvus(self):
+        return self.snapshot.milvus
+
+    @property
+    def hybrid(self):
+        return self.snapshot.hybrid
+
+    @property
+    def router(self):
+        return self._snapshot.router if self.ready else None
+
+    def _new_milvus(self, collection):
+        return MilvusIndexConstructionModule(self.config.milvus_host, self.config.milvus_port,
+            collection, self.config.milvus_dimension, self.config.embedding_model)
+
+    def _assemble(self, version, data, documents, milvus, graph):
+        hybrid = HybridRetrievalModule(self.config, milvus)
+        hybrid.initialize(documents)
+        retrieval = GraphRAGRetrieval(self.config, snapshot=graph, documents=documents)
+        router = IntelligentQueryRouter(hybrid, retrieval, None, self.config)
+        return RetrievalSnapshot(version, data, documents, milvus, graph, hybrid, router)
+
+    def restore(self):
+        with self._lock:
+            row = self.store.active()
+            if row is None:
+                return False
+            documents = [Document(**d) for d in row["documents"]]
+            snapshot = self._restore_row(row, documents)
+            self._activate(snapshot)
+            return True
+
+    def _restore_row(self, row, documents):
+        expected = digest([row["payload"], self.config.embedding_model, self.config.milvus_dimension, "schema-v2"])
+        if row["fingerprint"] != expected:
+            raise RuntimeError("索引与当前 Embedding/schema 配置不一致，请重新构建")
+        milvus = self._new_milvus(row["collection"])
+        if not milvus.load_collection():
+            raise RuntimeError("活动版本的向量集合不存在，请使用 force=true 重新构建")
+        graph = GraphSnapshot(self.config, row["id"])
+        try:
+            if milvus.get_collection_stats()["row_count"] != len(documents):
+                raise RuntimeError("活动版本的向量数量不匹配")
+            if graph.statistics().get("Job", 0) != len(documents):
+                raise RuntimeError("活动版本的图谱数量不匹配")
+            return self._assemble(row["id"], row["payload"], documents, milvus, graph)
+        except Exception:
+            graph.close()
+            raise
+
+    def _activate(self, snapshot):
+        # Requests hold one snapshot for their entire turn; existing readers survive.
+        if self._snapshot:
+            self._retired.append(self._snapshot)
+        self._snapshot = snapshot
+
+    def build(self, force=False):
+        with self._lock, self.store.build_lock():
+            data = self.data_module.load_seed_data()
+            documents = self.data_module.build_job_documents()
+            for doc in documents:
+                doc.metadata["content_hash"] = digest([doc.page_content, doc.metadata])
+            fingerprint = digest([data, self.config.embedding_model, self.config.milvus_dimension, "schema-v2"])
+            previous = self.store.active()
+            if previous and previous["fingerprint"] == fingerprint and not force:
+                if not self.ready or self.snapshot.version != previous["id"]:
+                    self._activate(self._restore_row(previous, documents))
+                return self.statistics() | {"unchanged": True}
+            before = {d["metadata"]["node_id"]: d["metadata"]["content_hash"] for d in previous["documents"]} if previous else {}
+            after = {d.metadata["node_id"]: d.metadata["content_hash"] for d in documents}
+            changes = {"added": sorted(after.keys() - before.keys()), "deleted": sorted(before.keys() - after.keys()),
+                       "updated": sorted(k for k in before.keys() & after.keys() if before[k] != after[k])}
+            version, collection = self.store.prepare(fingerprint, self.config.milvus_collection_name,
+                data, [{"page_content": d.page_content, "metadata": d.metadata} for d in documents])
+            milvus, graph = self._new_milvus(collection), GraphSnapshot(self.config, version)
+            try:
+                milvus.build_vector_index(documents, store=self.store)
+                graph.build(data)
+                if milvus.get_collection_stats()["row_count"] != len(documents) or graph.statistics().get("Job", 0) != len(documents):
+                    raise RuntimeError("新版本的图谱/向量数量校验失败")
+                snapshot = self._assemble(version, data, documents, milvus, graph)
+                stats = {"ready": True, "version": version, "graph": graph.statistics(),
+                         "milvus": milvus.get_collection_stats(), "routing": {}}
+                self.store.publish(version)
+                self._activate(snapshot)
+                return stats | {"changes": changes}
+            except Exception as error:
+                self.store.fail(version, error)
+                graph.close()
+                raise
+
+    def statistics(self):
+        snapshot = self._snapshot
+        if snapshot is None:
+            return {"ready": False, "milvus": {"row_count": 0}, "graph": {}, "routing": {}}
+        return {"ready": True, "version": snapshot.version, "graph": snapshot.graph.statistics(),
+                "milvus": snapshot.milvus.get_collection_stats(), "routing": snapshot.router.get_route_statistics()}
+
+    def rollback(self, version):
+        with self._lock, self.store.build_lock():
+            row = self.store.get_version(version)
+            if row is None:
+                raise ValueError("没有找到可回滚的已就绪版本")
+            documents = [Document(**d) for d in row["documents"]]
+            snapshot = self._restore_row(row, documents)
+            self.store.publish(version)
+            self._activate(snapshot)
+            return {"status": "ok", "version": version}
+
     def _ensure_llm(self):
-        if self.llm is None:
-            self.llm = LLMClient(self.config)
-            self.graph = GraphRAGRetrieval(self.config, self.llm)
-            self.router = IntelligentQueryRouter(self.hybrid, self.graph, self.llm, self.config)
-            self.generation = GenerationIntegrationModule(self.llm)
-            self.gap = GapAnalysisModule(self.config, self.llm)
+        with self._llm_lock:
+            if self.llm is None:
+                from rag_modules.llm import LLMClient
+                from rag_modules.generation_integration import GenerationIntegrationModule
+                llm = LLMClient(self.config)
+                self.generation = GenerationIntegrationModule(llm)
+                self.llm = llm
         return self.llm
 
-    # ========== 知识库构建 ==========
-    def build(self, force: bool = False):
-        """建图 + 建向量索引 + 初始化检索器"""
-        logger.info("开始构建知识库...")
+    def ask_docs(self, question, top_k=None, filters=None, enable_agentic=True, snapshot=None):
+        snapshot = snapshot or self.snapshot
+        parsed = parse_filters(question, snapshot.data, filters)
+        k = self.config.top_k if top_k is None else top_k
+        if k <= 0:
+            return [], snapshot.router.analyze_query(question, parsed)
+        docs, analysis = snapshot.router.route_query(question, max(k, self.config.retrieval_candidates),
+            filters=parsed, enable_agentic=enable_agentic)
+        return self.reranker.rerank(question, docs, k), analysis
 
-        # 1. 图构建（写入 Neo4j）
-        self.data_module.build_graph()
-
-        # 2. 生成岗位档案文档
-        documents = self.data_module.build_job_documents()
-
-        # 3. 向量索引（幂等：已有则复用；force 则重建）
-        if force and self.milvus.has_collection():
-            self.milvus.delete_collection()
-        if not self.milvus.has_collection():
-            self.milvus.build_vector_index(documents)
-        else:
-            self.milvus.load_collection()
-
-        # 4. 初始化检索器
-        self.hybrid.initialize(documents)
-
-        self.ready = True
-        stats = self.data_module.get_statistics()
-        stats["milvus"] = self.milvus.get_collection_stats()
-        logger.info("知识库构建完成: %s", stats)
-        return stats
-
-    # ========== 问答 ==========
-    def ask(self, question: str) -> Tuple[str, List, QueryAnalysis]:
-        """统一问答入口（非流式）"""
-        if not self.ready:
-            raise RuntimeError("系统未初始化，请先调用 build()")
+    def ask(self, question):
+        docs, analysis = self.ask_docs(question)
         self._ensure_llm()
-        self.graph.initialize()
+        return self.generation.generate_answer(question, docs), docs, analysis
 
-        docs, analysis = self.router.route_query(question)
-        answer = self.generation.generate_answer(question, docs)
-        return answer, docs, analysis
-
-    def ask_docs(self, question: str, top_k: int = None) -> Tuple[List, QueryAnalysis]:
-        """只做路由检索，返回文档与分析（供 SSE 服务拆分阶段输出）"""
-        if not self.ready:
-            raise RuntimeError("系统未初始化，请先调用 build()")
-        self._ensure_llm()
-        self.graph.initialize()
-        return self.router.route_query(question, top_k)
-
-    def stream_answer(self, question: str, documents: List):
-        """基于已检索文档做流式生成"""
+    def stream_answer(self, question, documents: List):
         self._ensure_llm()
         yield from self.generation.generate_answer_stream(question, documents)
 
     def cleanup(self):
         self.data_module.close()
-        if self.graph:
-            self.graph.close()
-        if self.gap:
-            self.gap.close()
-        self.milvus.close()
+        for snapshot in self._retired + ([self._snapshot] if self._snapshot else []):
+            snapshot.graph.close()
+        if self._snapshot:
+            self._snapshot.milvus.close()
+        if self.llm:
+            self.llm.client.close()
 
 
-# 模块级单例，供 FastAPI 复用
 system = RecruitmentGraphRAGSystem(default_config)

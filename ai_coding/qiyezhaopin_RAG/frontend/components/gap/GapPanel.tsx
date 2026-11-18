@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
   CheckCircle2,
@@ -30,38 +30,6 @@ type JobMeta = {
   company?: string;
 };
 
-const candidates: CandidateMeta[] = [
-  { id: "cand_001", name: "张三", years: 3, education: "本科", skills: ["Python", "FastAPI", "MySQL", "Redis", "Docker"] },
-  { id: "cand_002", name: "李四", years: 5, education: "硕士", skills: ["Go", "Kubernetes", "Docker", "Linux", "Python"] },
-  { id: "cand_003", name: "王五", years: 0, education: "本科", skills: ["Python", "RAG", "LangChain", "PyTorch"] },
-  { id: "cand_004", name: "赵六", years: 2, education: "本科", skills: ["Java", "Spring Boot", "MySQL"] },
-  { id: "cand_005", name: "孙七", years: 4, education: "本科", skills: ["Python", "PyTorch", "NLP", "TensorFlow"] },
-  { id: "cand_006", name: "周八", years: 0, education: "硕士", skills: ["Python", "知识图谱", "Neo4j", "RAG"] },
-];
-
-const jobs: JobMeta[] = [
-  { id: "job_001", name: "Python后端开发工程师（腾讯·深圳）", company: "腾讯" },
-  { id: "job_002", name: "Python后端开发工程师（阿里巴巴·杭州）", company: "阿里巴巴" },
-  { id: "job_003", name: "Java后端开发工程师", company: "美团" },
-  { id: "job_004", name: "后端开发工程师（应届）", company: "字节跳动" },
-  { id: "job_005", name: "高级Python后端开发工程师（京东·北京）", company: "京东" },
-  { id: "job_006", name: "Go后端开发工程师", company: "蚂蚁集团" },
-  { id: "job_010", name: "AI平台后端工程师", company: "字节跳动" },
-  { id: "job_011", name: "大模型基础设施工程师", company: "美团" },
-  { id: "job_012", name: "云原生AI基础设施工程师", company: "阿里巴巴" },
-  { id: "job_013", name: "AI训推平台工程师", company: "华为" },
-  { id: "job_014", name: "AI基础设施运维工程师", company: "科大讯飞" },
-  { id: "job_020", name: "RAG算法工程师（应届）", company: "百度" },
-  { id: "job_021", name: "大模型应用开发工程师（应届）", company: "智谱AI" },
-  { id: "job_022", name: "NLP算法工程师", company: "科大讯飞" },
-  { id: "job_023", name: "知识图谱工程师（应届）", company: "百度" },
-  { id: "job_024", name: "大模型训练工程师", company: "智谱AI" },
-  { id: "job_030", name: "数据工程师", company: "字节跳动" },
-  { id: "job_040", name: "前端开发工程师", company: "腾讯" },
-  { id: "job_050", name: "云原生平台工程师", company: "阿里巴巴" },
-  { id: "job_051", name: "SRE工程师", company: "华为" },
-];
-
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`card p-5 ${className}`}>{children}</div>;
 }
@@ -82,8 +50,11 @@ function Chip({ active, onClick, children }: { active?: boolean; onClick?: () =>
 }
 
 export default function GapPanel() {
-  const [candidate, setCandidate] = useState("张三");
-  const [job, setJob] = useState("RAG算法工程师（应届）");
+  const [catalog, setCatalog] = useState<{ candidates: CandidateMeta[]; jobs: JobMeta[] }>({ candidates: [], jobs: [] });
+  const candidates = catalog.candidates;
+  const jobs = catalog.jobs;
+  const [candidate, setCandidate] = useState("");
+  const [job, setJob] = useState("");
   const [loading, setLoading] = useState(false);
   const [gap, setGap] = useState<GapResult | null>(null);
   const [err, setErr] = useState("");
@@ -93,11 +64,25 @@ export default function GapPanel() {
   const [whatif, setWhatif] = useState<WhatIfResult | null>(null);
   const [whatifErr, setWhatifErr] = useState("");
 
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/catalog", { cache: "no-store", signal: controller.signal })
+      .then(async res => {
+        if (!res.ok) throw new Error("请先构建知识库后读取岗位列表");
+        const data = await res.json() as { candidates: CandidateMeta[]; jobs: JobMeta[] };
+        setCatalog(data);
+        setCandidate(data.candidates[0]?.id ?? "");
+        setJob(data.jobs[0]?.id ?? "");
+      })
+      .catch((error: Error) => { if (error.name !== "AbortError") setErr(error.message); });
+    return () => controller.abort();
+  }, []);
+
   const candidateMeta = useMemo(
-    () => candidates.find((c) => c.name === candidate),
-    [candidate],
+    () => candidates.find((c) => c.id === candidate),
+    [candidate, candidates],
   );
-  const jobMeta = useMemo(() => jobs.find((j) => j.name === job), [job]);
+  const jobMeta = useMemo(() => jobs.find((j) => j.id === job), [job, jobs]);
 
   const analyze = async () => {
     setLoading(true);
@@ -169,7 +154,7 @@ export default function GapPanel() {
               className="w-full appearance-none rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-accent-500/50"
             >
               {candidates.map((c) => (
-                <option key={c.id} value={c.name}>
+                <option key={c.id} value={c.id}>
                   {c.name} · {c.years}年 · {c.education}
                 </option>
               ))}
@@ -188,7 +173,7 @@ export default function GapPanel() {
               className="w-full appearance-none rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-accent-500/50"
             >
               {jobs.map((j) => (
-                <option key={j.id} value={j.name}>
+                <option key={j.id} value={j.id}>
                   {j.name}
                 </option>
               ))}
@@ -199,7 +184,7 @@ export default function GapPanel() {
           <div className="flex items-end">
             <button
               onClick={analyze}
-              disabled={loading}
+              disabled={loading || !candidateMeta || !jobMeta}
               className="flex items-center justify-center gap-2 rounded-lg bg-accent-600 px-4 py-2 text-sm text-white shadow-lg shadow-accent-500/25 transition-colors hover:bg-accent-500 disabled:opacity-60"
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitCompareArrows className="h-4 w-4" />}

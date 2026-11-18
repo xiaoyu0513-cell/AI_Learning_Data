@@ -5,7 +5,7 @@ LLM 客户端封装（DeepSeek，走 OpenAI 兼容接口）
 import json
 import logging
 
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,28 @@ class LLMClient:
         self.client = OpenAI(
             api_key=config.llm_api_key,
             base_url=config.llm_base_url,
+            timeout=config.llm_timeout_seconds,
+            max_retries=config.llm_max_retries,
         )
+        self.async_client = AsyncOpenAI(api_key=config.llm_api_key, base_url=config.llm_base_url,
+                                       timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries)
+
+    async def stream(self, messages, usage=None):
+        stream = await self.async_client.chat.completions.create(
+            model=self.config.llm_model, messages=messages, temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens, stream=True, stream_options={"include_usage": True})
+        try:
+            async for chunk in stream:
+                if chunk.usage and usage is not None:
+                    usage.update(chunk.usage.model_dump())
+                if chunk.choices:
+                    reason = chunk.choices[0].finish_reason
+                    if reason and usage is not None:
+                        usage["finish_reason"] = reason
+                    if chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+        finally:
+            await stream.close()
 
     def chat(self, prompt: str, system: str = None, temperature: float = None,
              max_tokens: int = None) -> str:

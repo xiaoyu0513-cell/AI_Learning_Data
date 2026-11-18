@@ -324,7 +324,7 @@ export default function GraphExplorer() {
               {results.map((r) => (
                 <button
                   key={r.id}
-                  onClick={() => load(r.name)}
+                  onClick={() => load(r.id)}
                   className="flex w-full items-center justify-between px-3 py-2 text-left text-xs transition-colors hover:bg-white/5"
                 >
                   <span className="truncate text-ink">{r.name}</span>

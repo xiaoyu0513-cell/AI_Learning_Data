@@ -1,0 +1,4 @@
+-r requirements-core.txt
+pytest>=8.4,<9
+pytest-asyncio>=0.24,<1
+httpx>=0.28,<1

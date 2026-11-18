@@ -1,155 +1,88 @@
-"""
-人岗匹配 Gap 分析与 What-if 推演（招聘领域）
-- analyze_gap：分析候选人与岗位的技能差距 + 匹配率 + 学习路径 + 建议
-- what_if：假设候选人获得某些技能后，能匹配哪些新岗位
-"""
-import logging
-from typing import Dict, List
-
-from neo4j import GraphDatabase
-
-logger = logging.getLogger(__name__)
+"""Reproducible skill coverage tools; no LLM or hiring-probability claims."""
+import json
+from pathlib import Path
+from .query import canonical_skill
 
 
 class GapAnalysisModule:
-    def __init__(self, config, llm_client=None):
+    def __init__(self, config, llm_client=None, data=None):
         self.config = config
-        self.llm_client = llm_client
+        self.data = data
         self.driver = None
 
     def initialize(self):
-        if self.driver is not None:
-            return
-        try:
-            self.driver = GraphDatabase.driver(
-                self.config.neo4j_uri,
-                auth=(self.config.neo4j_user, self.config.neo4j_password),
-            )
-            with self.driver.session(database=self.config.neo4j_database) as s:
-                s.run("RETURN 1")
-            logger.info("Gap 分析 Neo4j 连接成功")
-        except Exception as e:
-            logger.error("Gap 分析 Neo4j 连接失败: %s", e)
+        if self.data is None:
+            self.data = json.loads(Path(self.config.seed_path).read_text(encoding="utf-8"))
 
     def close(self):
-        if self.driver:
-            self.driver.close()
-            self.driver = None
+        pass
 
-    def get_candidate_skills(self, candidate: str) -> List[str]:
-        if not self.driver:
-            return []
-        with self.driver.session(database=self.config.neo4j_database) as s:
-            rec = s.run(
-                "MATCH (c:Candidate {name: $name})-[:HAS_SKILL]->(s:Skill) "
-                "RETURN collect(s.name) AS skills",
-                name=candidate,
-            ).single()
-        return list(rec["skills"]) if rec else []
-
-    def get_job_required_skills(self, job: str) -> List[str]:
-        if not self.driver:
-            return []
-        with self.driver.session(database=self.config.neo4j_database) as s:
-            rec = s.run(
-                "MATCH (j:Job)-[:REQUIRES_SKILL]->(s:Skill) "
-                "WHERE j.name = $name OR j.nodeId = $name "
-                "RETURN collect(s.name) AS skills",
-                name=job,
-            ).single()
-        return list(rec["skills"]) if rec else []
-
-    def _learning_paths(self, skill: str, max_depth: int = 3) -> List[List[str]]:
-        if not self.driver:
-            return []
-        with self.driver.session(database=self.config.neo4j_database) as s:
-            results = s.run(
-                f"MATCH path = (s:Skill {{name: $skill}})<-[:PREREQUISITE_OF*1..{max_depth}]-(p:Skill) "
-                "RETURN [n IN nodes(path) | n.name] AS path, length(path) AS hops "
-                "ORDER BY hops DESC LIMIT 5",
-                skill=skill,
-            )
-            return [r["path"] for r in results]
-
-    def analyze_gap(self, candidate: str, job: str) -> Dict:
-        """分析候选人与岗位的技能 Gap（按名字/ nodeId 匹配）"""
+    def _candidate(self, name):
         self.initialize()
-        if not self.driver:
-            return {"error": "Neo4j 不可用"}
+        return next((c for c in self.data.get("candidates", []) if name in (c["name"], c["nodeId"])), None)
 
-        candidate_skills = self.get_candidate_skills(candidate)
-        required_skills = self.get_job_required_skills(job)
-        if not required_skills:
-            return {"error": "未找到该岗位或其技能要求"}
-
-        matched = [s for s in required_skills if s in candidate_skills]
-        missing = [s for s in required_skills if s not in candidate_skills]
-        total = len(required_skills)
-        match_rate = len(matched) / total if total else 0.0
-
-        learning_paths = []
-        for skill in missing:
-            paths = self._learning_paths(skill)
-            learning_paths.append({
-                "skill": skill,
-                "prerequisites": paths[0] if paths else [],
-            })
-
-        return {
-            "candidate": candidate,
-            "job": job,
-            "match_rate": round(match_rate, 3),
-            "matched_skills": matched,
-            "missing_skills": missing,
-            "learning_paths": learning_paths,
-            "recommendation": self._generate_recommendation(match_rate, matched, missing),
-        }
-
-    def what_if(self, candidate: str, acquired_skills: List[str]) -> Dict:
-        """What-if 推演：假设候选人获得某些技能，能匹配哪些新岗位"""
+    def _job(self, name):
         self.initialize()
-        if not self.driver:
-            return {"error": "Neo4j 不可用"}
+        return next((j for j in self.data.get("jobs", []) if name in (j["name"], j["nodeId"])), None)
 
-        current_skills = set(self.get_candidate_skills(candidate))
-        new_skills = current_skills | set(acquired_skills)
+    def get_candidate_skills(self, candidate):
+        c = self._candidate(candidate)
+        return [s["name"] for s in c.get("skills", [])] if c else []
 
-        with self.driver.session(database=self.config.neo4j_database) as s:
-            jobs = [
-                r.data()
-                for r in s.run(
-                    "MATCH (j:Job)-[:REQUIRES_SKILL]->(s:Skill) "
-                    "WITH j, collect(s.name) AS required "
-                    "RETURN j.nodeId AS job_id, j.name AS job_name, required"
-                )
-            ]
+    def get_job_required_skills(self, job):
+        j = self._job(job)
+        return [s["name"] for s in j.get("skills", []) if s.get("isRequired", True)] if j else []
 
+    def _learning_paths(self, skill, max_depth=3):
+        self.initialize()
+        prerequisites = {i["skill"]: i.get("prerequisites", []) for i in self.data.get("skill_prerequisites", [])}
+        result = []
+        def visit(current, path):
+            parents = [p for p in prerequisites.get(current, []) if p not in path]
+            if not parents or len(path) > max_depth:
+                result.append(list(reversed(path)))
+                return
+            for parent in parents:
+                visit(parent, path + [parent])
+        visit(skill, [skill])
+        return sorted(result, key=lambda p: (-len(p), p))[:5]
+
+    def analyze_gap(self, candidate, job):
+        c, j = self._candidate(candidate), self._job(job)
+        if c is None or j is None:
+            return {"error": "候选人或岗位不存在"}
+        owned = {canonical_skill(s["name"]) for s in c.get("skills", [])}
+        required = self.get_job_required_skills(job)
+        matched = [s for s in required if canonical_skill(s) in owned]
+        missing = [s for s in required if canonical_skill(s) not in owned]
+        bonus = [s["name"] for s in j.get("skills", []) if not s.get("isRequired", True)]
+        return {"candidate": c["name"], "job": j["name"],
+                "match_rate": round(len(matched) / len(required), 3) if required else 1.0,
+                "matched_skills": matched, "missing_skills": missing, "bonus_skills": bonus,
+                "learning_paths": [{"skill": s, "prerequisites": self._learning_paths(s)[0],
+                                    "all_paths": self._learning_paths(s)} for s in missing],
+                "recommendation": "优先补充必需技能：" + "、".join(missing) if missing else "已覆盖列出的必需技能；仍需核实熟练度和经验。",
+                "method": "required_skill_coverage", "limitation": "仅按技能名称计算覆盖率，不评价熟练度，也不代表录用概率"}
+
+    def what_if(self, candidate, acquired_skills):
+        c = self._candidate(candidate)
+        if c is None:
+            return {"error": "候选人不存在"}
+        current = {canonical_skill(s) for s in self.get_candidate_skills(candidate)}
+        expanded = current | {canonical_skill(s) for s in acquired_skills}
         opportunities = []
-        for job in jobs:
-            required = set(job["required"])
+        for job in self.data["jobs"]:
+            names = self.get_job_required_skills(job["nodeId"])
+            required = {canonical_skill(s) for s in names}
             if not required:
                 continue
-            matched = new_skills & required
-            match_rate = len(matched) / len(required)
-            if match_rate >= 0.5:
-                opportunities.append({
-                    "job_id": job["job_id"],
-                    "job_name": job["job_name"],
-                    "match_rate": round(match_rate, 3),
-                    "newly_matched": list(matched - current_skills),
-                })
-
-        opportunities.sort(key=lambda x: x["match_rate"], reverse=True)
-        return {
-            "candidate": candidate,
-            "acquired_skills": acquired_skills,
-            "new_opportunities": opportunities[:10],
-        }
-
-    def _generate_recommendation(self, match_rate: float, matched: List[str], missing: List[str]) -> str:
-        if match_rate >= 0.8:
-            return f"高度匹配。建议投递，重点突出：{', '.join(matched[:3])}"
-        elif match_rate >= 0.5:
-            return f"中等匹配。建议补充：{', '.join(missing[:3])}"
-        else:
-            return f"匹配度较低。需要系统学习：{', '.join(missing[:5])}"
+            before, after = len(current & required) / len(required), len(expanded & required) / len(required)
+            if after > before:
+                opportunities.append({"job_id": job["nodeId"], "job_name": job["name"],
+                    "before_rate": round(before, 3), "match_rate": round(after, 3),
+                    "delta": round(after-before, 3), "newly_eligible": before < .5 <= after,
+                    "newly_matched": sorted(s for s in names if canonical_skill(s) in expanded - current)})
+        opportunities.sort(key=lambda x: (-x["delta"], -x["match_rate"], x["job_id"]))
+        return {"candidate": candidate, "acquired_skills": acquired_skills,
+                "new_opportunities": [o for o in opportunities if o["newly_eligible"]][:10],
+                "improved_matches": opportunities[:20]}

@@ -20,6 +20,7 @@ export type Citation = {
 };
 
 export type ChatEvent =
+  | { type: "session"; content: { session_id: string; request_id: string } }
   | { type: "status"; content: string }
   | { type: "route_decision"; content: RouteDecision }
   | { type: "citations"; content: Citation[] }
@@ -57,7 +58,7 @@ export type Subgraph = {
 export type NodeSearchResult = {
   name: string;
   label: string;
-  id: number;
+  id: string;
 };
 
 export type Health = {
